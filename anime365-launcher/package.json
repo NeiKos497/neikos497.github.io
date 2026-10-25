@@ -1,0 +1,12 @@
+{
+  "name": "anime365-tizenbrew-local-launcher",
+  "version": "0.1.6",
+  "packageType": "mods",
+  "appName": "Anime365",
+  "description": "Запуск домашнего Anime365, установленного локально на телевизоре",
+  "websiteURL": "file:///home/owner/share/anime365.html",
+  "main": "main.js",
+  "serviceFile": "install-local.js",
+  "keys": ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaRewind", "MediaFastForward", "MediaStop"],
+  "license": "GPL-2.0-only"
+}
