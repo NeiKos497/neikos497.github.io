@@ -29,8 +29,8 @@
    var path=parse(req.url).pathname,origin=req.headers.origin,address=String(req.socket.remoteAddress||'').replace(/^::ffff:/,'');
    var local=/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address);
    if(!local)return answer(res,403,{error:'Local network only'});
-   if(origin){if(path!=='/bridge'||origin!=='null')return answer(res,403,{error:'Browser origin rejected'});res.setHeader('Access-Control-Allow-Origin','null');res.setHeader('Vary','Origin');}
-   if(req.method==='OPTIONS'&&path==='/bridge'&&origin==='null'){res.setHeader('Access-Control-Allow-Methods','POST');res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type');return answer(res,204);}
+   if(origin){if(path!=='/bridge'||(origin!=='null'&&origin!=='file://'))return answer(res,403,{error:'Browser origin rejected'});res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');}
+   if(req.method==='OPTIONS'&&path==='/bridge'&&(origin==='null'||origin==='file://')){res.setHeader('Access-Control-Allow-Methods','POST');res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type');return answer(res,204);}
    if(!equal(req.headers.authorization,'Bearer '+key))return answer(res,401,{error:'Authentication required'});
    try{
     if(req.method==='GET'&&path==='/health')return answer(res,200,health());
