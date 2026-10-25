@@ -1,6 +1,6 @@
 {
   "name": "anime365-tizenbrew-local-launcher",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packageType": "mods",
   "appName": "Anime365",
   "description": "Запуск домашнего Anime365, установленного локально на телевизоре",
