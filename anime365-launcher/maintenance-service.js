@@ -1,11 +1,26 @@
 /* Anime365 TV-local maintenance. No account data, shell or general filesystem API. */
 (function () {
  'use strict';
+ function NativeRecovery(options){
+  options=options||{};var http=require('http'),crypto=require('crypto'),os=require('os'),socket=null,busy=false,lastAttempt=0,state={connected:false,port:null,error:'',attempts:0},id=0,buffer=null,fragments=[];
+  function B(v){return Buffer.from?Buffer.from(v):new Buffer(v);}
+  function clean(v){return String(v||'').replace(/https?:\/\/\S+/g,'[url]').replace(/Bearer\s+\S+/gi,'[credential]').slice(0,500);}
+  function allowed(url){return url==='file:///home/owner/share/anime365.html'||/^file:\/\/\/tizenbrew-ui\/dist\/index\.html(?:\?anime365-local=1)?$/.test(url||'');}
+  function addresses(){var a=['127.0.0.1'];var n=os.networkInterfaces();Object.keys(n).forEach(function(k){n[k].forEach(function(x){if(x.family==='IPv4')a.push(x.address);});});return a;}
+  function targets(port){return new Promise(function(resolve,reject){var q=http.get({hostname:'127.0.0.1',port:port,path:'/json/list',agent:false},function(r){var data='';r.on('data',function(b){data+=b;if(data.length>65536)q.destroy();});r.on('end',function(){try{resolve(JSON.parse(data));}catch(e){reject(Error('Native target discovery failed'));}});});q.setTimeout(1500,function(){q.destroy();});q.on('error',reject);});}
+  function frame(body,opcode){body=B(body);var n=body.length,head=B(n<126?[128|(opcode||1),128|n]:[128|(opcode||1),254,n>>8,n&255]),mask=crypto.randomBytes(4),out=B(body);for(var i=0;i<n;i++)out[i]^=mask[i%4];return Buffer.concat([head,mask,out]);}
+  function send(method,params){if(socket&&!socket.destroyed)socket.write(frame(JSON.stringify({id:++id,method:method,params:params||{}})));}
+  function message(body){try{var m=JSON.parse(body.toString('utf8'));if(m.error)state.error=clean(m.error.message);if(m.method==='Runtime.exceptionThrown'){var d=m.params.exceptionDetails;state.error=clean(d.exception&&d.exception.description||d.text);if(options.onError)options.onError(state.error);}}catch(e){state.error='Invalid native debugger response';}}
+  function incoming(chunk){buffer=Buffer.concat([buffer||B([]),chunk]);while(buffer.length>=2){var opcode=buffer[0]&15,fin=buffer[0]&128,n=buffer[1]&127,offset=2;if(n===126){if(buffer.length<4)return;n=buffer.readUInt16BE(2);offset=4;}else if(n===127){if(buffer.length<10)return;if(buffer.readUInt32BE(2)!==0)return socket.destroy();n=buffer.readUInt32BE(6);offset=10;}if(n>524288)return socket.destroy();if(buffer.length<offset+n)return;var body=buffer.slice(offset,offset+n);buffer=buffer.slice(offset+n);if(opcode===8)return socket.destroy();if(opcode===9){socket.write(frame(body,10));continue;}if(opcode===1||opcode===0){fragments.push(body);if(fin){message(Buffer.concat(fragments));fragments=[];}}}}
+  function connect(port,target){return new Promise(function(resolve,reject){var key=crypto.randomBytes(16).toString('base64'),expected=crypto.createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');var q=http.request({hostname:'127.0.0.1',port:port,path:'/devtools/page/'+encodeURIComponent(target.id),headers:{Connection:'Upgrade',Upgrade:'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':key},agent:false});q.setTimeout(3000,function(){q.destroy();});q.on('error',reject);q.on('response',function(r){r.resume();reject(Error('Native debugger refused connection'));});q.on('upgrade',function(r,s,head){if(r.headers['sec-websocket-accept']!==expected){s.destroy();return reject(Error('Native debugger handshake differs'));}socket=s;s.setTimeout(0);buffer=B([]);state.connected=true;state.port=port;state.error='';s.on('data',incoming);s.on('error',function(e){state.error=clean(e.message);});s.on('close',function(){state.connected=false;});if(head.length)incoming(head);send('Runtime.enable');send('Page.navigate',{url:'file:///home/owner/share/anime365.html'});resolve(true);});q.end();});}
+  function recover(){if(busy)return Promise.resolve(false);busy=true;lastAttempt=Date.now();state.attempts++;var local=(options.addresses||addresses)(),handles=(options.handles||function(){return process._getActiveHandles();})().filter(function(h){return h.remotePort>=32768&&h.remotePort<=65535&&h.localPort!==8081&&h.localPort!==8096&&local.indexOf(String(h.remoteAddress||'').replace(/^::ffff:/,''))>=0;});var chain=Promise.resolve(false);handles.forEach(function(h){chain=chain.then(function(done){if(done)return true;return targets(h.remotePort).then(function(list){var target=list.filter(function(t){return t.type==='page'&&allowed(t.url);})[0];if(!target)return false;if(socket===h&&!h.destroyed){send('Page.navigate',{url:'file:///home/owner/share/anime365.html'});return true;}h.destroy();return new Promise(function(r){setTimeout(r,150);}).then(function(){return connect(h.remotePort,target);});}).catch(function(e){state.error=clean(e.message);return false;});});});return chain.then(function(done){busy=false;return done;},function(e){busy=false;state.error=clean(e.message);return false;});}
+  return {recover:recover,status:function(){return {connected:state.connected,port:state.port,error:state.error,attempts:state.attempts,lastAttempt:lastAttempt};},close:function(){if(socket)socket.destroy();}};
+ }
  function createMaintenance(options) {
   options=options||{};
   var fs=options.fs||require('fs'),http=require('http'),crypto=require('crypto'),parse=require('url').parse;
   var root=options.root||'/home/owner/share',app=root+'/anime365.html',previous=root+'/anime365.previous.html',next=root+'/anime365.update.tmp',keyPath=root+'/anime365-maintenance.key';
-  var started=Date.now(),logs=[],commands=[],last=null,lastSeen=0,visible=false,max=512*1024;
+  var started=Date.now(),logs=[],commands=[],last=null,lastSeen=0,visible=false,max=512*1024,recovery=null;
   function bytes(v){return typeof v==='string'?(Buffer.from?Buffer.from(v,'utf8'):new Buffer(v,'utf8')):v;}
   function sha(v){return crypto.createHash('sha256').update(v).digest('hex');}
   if((!fs.existsSync(app)||fs.statSync(app).size<1000)&&fs.existsSync(root+'/tmp/sdk_tools/anime365.html'))fs.writeFileSync(app,fs.readFileSync(root+'/tmp/sdk_tools/anime365.html'));
@@ -16,7 +31,7 @@
   function safe(v,depth){if(depth>5)return null;if(typeof v==='string')return v.replace(/https?:\/\/\S+/g,'[url]').replace(/Bearer\s+\S+/gi,'[credential]').slice(0,1000);if(v===null||typeof v==='number'||typeof v==='boolean')return v;if(Array.isArray(v))return v.slice(0,200).map(function(x){return safe(x,depth+1);});if(v&&typeof v==='object'){var out={};Object.keys(v).slice(0,50).forEach(function(k){if(!/token|password|authorization|cookie|url|src|secret/i.test(k))out[k]=safe(v[k],depth+1);});return out;}return null;}
   function cleanStatus(v){var out={};['version','mode','picker','controls','seriesId','episodeId','translationId','time','duration','paused','native','busy','cues','subtitle','focus','error','cards','rows'].forEach(function(k){if(v&&v[k]!==undefined)out[k]=safe(v[k],0);});return out;}
   function digest(path){return fs.existsSync(path)?sha(fs.readFileSync(path)):null;}
-  function health(){return {serviceVersion:'0.2.0',uptime:Math.floor((Date.now()-started)/1000),sha256:digest(app),bytes:fs.existsSync(app)?fs.statSync(app).size:0,backupSha256:digest(previous),stagingExists:fs.existsSync(next)};}
+  function health(){return {serviceVersion:'0.2.2',uptime:Math.floor((Date.now()-started)/1000),sha256:digest(app),bytes:fs.existsSync(app)?fs.statSync(app).size:0,backupSha256:digest(previous),stagingExists:fs.existsSync(next)};}
   function ours(ref){return /^gh\/NeiKos497\/neikos497\.github\.io@[a-f0-9]{40}\/anime365-launcher$/.test(ref||'');}
   function moduleState(){var c=fs.existsSync(root+'/tizenbrewConfig.json')?JSON.parse(fs.readFileSync(root+'/tizenbrewConfig.json','utf8')):{modules:[]};return {config:c,moduleRef:(c.modules||[]).filter(ours)[0]||null};}
   function updateModule(v){if(!v||!/^[a-f0-9]{40}$/.test(v.commit||'')||!ours(v.expectedRef))return {code:400,data:{error:'Owned module commit and expected reference required'}};var current=moduleState();if(current.moduleRef!==v.expectedRef)return {code:409,data:{error:'Module reference changed'}};var ref='gh/NeiKos497/neikos497.github.io@'+v.commit+'/anime365-launcher',c=current.config,stage=root+'/anime365-module-config.tmp';c.modules=(c.modules||[]).filter(function(m){return !ours(m);});c.modules.push(ref);if(ours(c.autoLaunchModule))c.autoLaunchModule=ref;c.autoLaunchServiceList=(c.autoLaunchServiceList||[]).filter(function(m){return !ours('gh/'+m);});c.autoLaunchServiceList.push(ref.substring(3));try{fs.writeFileSync(stage,JSON.stringify(c,null,2));fs.writeFileSync(root+'/anime365-module-config.previous.json',fs.readFileSync(root+'/tizenbrewConfig.json'));fs.renameSync(stage,root+'/tizenbrewConfig.json');return {code:200,data:{moduleRef:ref,restartRequired:true}};}finally{if(fs.existsSync(stage))fs.unlinkSync(stage);}}
@@ -36,6 +51,8 @@
     if(req.method==='GET'&&path==='/health')return answer(res,200,health());
     if(req.method==='GET'&&path==='/status')return answer(res,200,{connected:Date.now()-lastSeen<6000,lastSeen:lastSeen,visible:visible,status:last,service:health()});
     if(req.method==='GET'&&path==='/logs')return answer(res,200,logs);
+    if(req.method==='GET'&&path==='/native')return answer(res,200,recovery?recovery.status():{enabled:false});
+    if(req.method==='POST'&&path==='/native/recover'){if(!recovery)return answer(res,503,{error:'Native recovery not started'});if(Date.now()-lastSeen<6000)return answer(res,409,{error:'Anime365 is already connected'});return recovery.recover().then(function(ok){answer(res,ok?200:503,recovery.status());});}
     if(req.method==='GET'&&path==='/module'){var ms=moduleState();return answer(res,200,{moduleRef:ms.moduleRef,autoLaunchModule:ms.config.autoLaunchModule,services:ms.config.autoLaunchServiceList});}
     if(req.method==='POST'&&path==='/module-ref')return read(req,res,function(body){try{var r=updateModule(json(body));answer(res,r.code,r.data);}catch(e){answer(res,500,{error:'Module configuration update failed'});}});
     if(req.method==='GET'&&/^\/commands\/[a-f0-9]+$/.test(path)){var id=path.split('/')[2],c=commands.filter(function(x){return x.id===id;})[0];return answer(res,c?200:404,c||{error:'Command not found'});}
@@ -46,12 +63,13 @@
     answer(res,404,{error:'Unknown endpoint'});
    }catch(e){log('request','failed');answer(res,500,{error:'Maintenance request failed'});}
   });
-  server.setTimeout(15000);return {server:server,health:health};
+  server.setTimeout(15000);return {server:server,health:health,startRecovery:function(){if(recovery)return;recovery=NativeRecovery({onError:function(e){log('native-error',e);}});var timer=setInterval(function(){if(Date.now()-started>8000&&Date.now()-lastSeen>6000&&Date.now()-recovery.status().lastAttempt>30000)recovery.recover();},2000);server.on('close',function(){clearInterval(timer);recovery.close();});}};
  }
+ createMaintenance.NativeRecovery=NativeRecovery;
  if(typeof module!=='undefined')module.exports=createMaintenance;
  if(typeof tizen!=='undefined'){
   var service=createMaintenance();
-  function listen(){service.server.on('error',function(e){console.log('Anime365 maintenance listen error: '+e.code);});service.server.listen(8096,'0.0.0.0');process.__anime365MaintenanceServer=service.server;}
+  function listen(){service.server.on('error',function(e){console.log('Anime365 maintenance listen error: '+e.code);});service.server.listen(8096,'0.0.0.0',function(){service.startRecovery();});process.__anime365MaintenanceServer=service.server;}
   if(process.__anime365MaintenanceServer)process.__anime365MaintenanceServer.close();listen();
  }
 })();
