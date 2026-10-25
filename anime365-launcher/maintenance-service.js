@@ -52,6 +52,6 @@
  if(typeof tizen!=='undefined'){
   var service=createMaintenance();
   function listen(){service.server.on('error',function(e){console.log('Anime365 maintenance listen error: '+e.code);});service.server.listen(8096,'0.0.0.0');process.__anime365MaintenanceServer=service.server;}
-  if(process.__anime365MaintenanceServer)process.__anime365MaintenanceServer.close(listen);else listen();
+  if(process.__anime365MaintenanceServer)process.__anime365MaintenanceServer.close();listen();
  }
 })();
